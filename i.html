@@ -23,7 +23,7 @@ body { padding:15px; margin:0; }
 // 配置worker（ES5专用写法）
 pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@2.5.207/build/pdf.worker.js";
 const params = new URLSearchParams(location.search);
-const fileName = params.get("f");
+const f = params.get("f");
 const listBox = document.getElementById("list");
 const renderBox = document.getElementById("wrap");
 const loadingTip = document.getElementById("loading");
@@ -74,8 +74,8 @@ function showList(){
 }
 
 // 入口判断
-if(fileName){
-  renderPdf("pdf/"+fileName);
+if(f){
+  renderPdf(f);
 }else{
   showList();
 }
