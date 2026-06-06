@@ -1,84 +1,292 @@
+
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>PDF在线预览</title>
-<style>
-body { padding:15px; margin:0; }
-#loading {text-align:center;font-size:18px;padding:40px 0;color:#333;}
-#list a {display:block;margin:8px 0;font-size:16px}
-#wrap canvas {display:block;margin:12px auto;border:1px #ddd solid;max-width:100%;}
-</style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>PDF 在线预览</title>
+    <!-- 引入 TailwindCSS 用于快速样式布局 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 引入 Font Awesome 图标 -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- 引入 PDF.js 核心库 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <style>
+        body {
+            background-color: #f3f4f6;
+            touch-action: manipulation; /* 优化移动端触摸体验 */
+        }
+        #pdf-container {
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding-bottom: 20px;
+        }
+        .pdf-page {
+            margin-bottom: 10px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            border-radius: 4px;
+            background-color: white;
+        }
+        /* 加载动画 */
+        .loader {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3b82f6;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        /* 隐藏滚动条但保留功能 */
+        ::-webkit-scrollbar {
+            width: 0px;
+            background: transparent;
+        }
+    </style>
 </head>
-<body>
-<div id="list"></div>
-<div id="wrap">
-  <div id="loading">渲染中，请稍等！</div>
-</div>
+<body class="h-screen flex flex-col">
 
-<!-- ES5版pdfjs，移除module，兼容全国产浏览器 -->
-<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@2.5.207/build/pdf.js"></script>
-<script>
-// 配置worker（ES5专用写法）
-pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@2.5.207/build/pdf.worker.js";
-const params = new URLSearchParams(location.search);
-const f = params.get("f");
-const listBox = document.getElementById("list");
-const renderBox = document.getElementById("wrap");
-const loadingTip = document.getElementById("loading");
+    <!-- 顶部导航栏 -->
+    <header class="bg-white shadow-sm z-10 px-4 py-3 flex justify-between items-center sticky top-0">
+        <div class="flex items-center space-x-2">
+            <i class="fa-solid fa-file-pdf text-red-500 text-xl"></i>
+            <h1 class="text-lg font-bold text-gray-800 truncate max-w-[200px]" id="doc-title">PDF 预览</h1>
+        </div>
+        <div class="flex space-x-3">
+            <button onclick="zoomOut()" class="text-gray-600 hover:text-blue-600 transition">
+                <i class="fa-solid fa-magnifying-glass-minus"></i>
+            </button>
+            <span id="page-info" class="text-sm text-gray-500 self-center">-</span>
+            <button onclick="zoomIn()" class="text-gray-600 hover:text-blue-600 transition">
+                <i class="fa-solid fa-magnifying-glass-plus"></i>
+            </button>
+        </div>
+    </header>
 
-// PDF文件清单，新增在此添加
-const pdfFiles = [
-  "252708610203linode.pdf"
-];
+    <!-- 主内容区域 -->
+    <main class="flex-1 overflow-y-auto relative" id="main-scroll">
+        <!-- 加载状态 -->
+        <div id="loading" class="absolute inset-0 flex flex-col justify-center items-center bg-gray-50 z-0">
+            <div class="loader mb-4"></div>
+            <p class="text-gray-500 text-sm">正在加载文档...</p>
+        </div>
 
-// 渲染PDF函数
-function renderPdf(path) {
-  pdfjsLib.getDocument(path).promise.then(function(doc){
-    loadingTip.remove(); //渲染成功删除加载文字
-    var pageTotal = doc.numPages;
-    var renderAll = function(pageNo){
-      doc.getPage(pageNo).then(function(page){
-        var scale = 1.2;
-        var viewport = page.getViewport({scale:scale});
-        var canvas = document.createElement("canvas");
-        var ctx = canvas.getContext("2d");
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        renderBox.appendChild(canvas);
-        page.render({canvasContext:ctx, viewport:viewport}).promise.then(function(){
-          if(pageNo < pageTotal){
-            renderAll(pageNo+1);
-          }
+        <!-- 错误提示 -->
+        <div id="error-msg" class="hidden absolute inset-0 flex flex-col justify-center items-center bg-gray-50 z-0 p-6 text-center">
+            <i class="fa-solid fa-circle-exclamation text-red-500 text-4xl mb-4"></i>
+            <p class="text-gray-700 font-medium mb-2">加载失败</p>
+            <p class="text-gray-500 text-sm mb-4" id="error-detail"></p>
+            <button onclick="location.reload()" class="bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 transition">
+                重试
+            </button>
+        </div>
+
+        <!-- PDF 渲染容器 -->
+        <div id="pdf-container" class="p-2"></div>
+    </main>
+
+    <!-- 底部页码导航 (固定) -->
+    <footer class="bg-white border-t px-4 py-2 flex justify-center items-center space-x-4 z-10">
+        <button id="prev-page" class="px-3 py-1 bg-gray-100 rounded hover:bg-gray-200 disabled:opacity-50" disabled>
+            <i class="fa-solid fa-chevron-left"></i>
+        </button>
+        <span class="text-sm text-gray-600">
+            Page <input type="number" id="page-num" value="1" min="1" class="w-12 text-center border rounded mx-1 py-0.5 text-sm"> 
+            / <span id="page-count">--</span>
+        </span>
+        <button id="next-page" class="px-3 py-1 bg-gray-100 rounded hover:bg-gray-200 disabled:opacity-50" disabled>
+            <i class="fa-solid fa-chevron-right"></i>
+        </button>
+    </footer>
+
+    <script>
+        // 配置 PDF.js worker
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+        let pdfDoc = null;
+        let pageNum = 1;
+        let pageRendering = false;
+        let pageNumPending = null;
+        let scale = 1.0; // 初始缩放比例
+        const canvasContainer = document.getElementById('pdf-container');
+        
+        // 获取 URL 中的 file 参数
+        function getQueryParam(param) {
+            const urlParams = new URLSearchParams(window.location.search);
+            return urlParams.get(param);
+        }
+
+        // 初始化加载
+        window.onload = function() {
+            const fileUrl = getQueryParam('file');
+            
+            if (!fileUrl) {
+                showError("未在 URL 中找到 'file' 参数。\n示例: index.html?file=/pdfs/demo.pdf");
+                return;
+            }
+
+            // 如果是相对路径，确保它是相对于域名的
+            // 如果用户传入的是完整 URL (http...) 则直接使用，否则拼接当前域名
+            let finalUrl = fileUrl;
+            if (!fileUrl.startsWith('http') && !fileUrl.startsWith('//')) {
+                // 假设文件在静态托管根目录或子目录
+                finalUrl = window.location.origin + (fileUrl.startsWith('/') ? '' : '/') + fileUrl;
+            }
+
+            loadPDF(finalUrl);
+        };
+
+        function loadPDF(url) {
+            document.getElementById('doc-title').innerText = decodeURIComponent(url.split('/').pop()) || 'PDF Document';
+            
+            pdfjsLib.getDocument(url).promise.then(function(pdfDoc_) {
+                pdfDoc = pdfDoc_;
+                document.getElementById('page-count').textContent = pdfDoc.numPages;
+                document.getElementById('loading').classList.add('hidden');
+                
+                // 初始渲染第一页
+                renderPage(pageNum);
+                updateButtons();
+            }).catch(function(error) {
+                console.error('Error loading PDF:', error);
+                showError("无法加载 PDF 文件。请检查文件路径是否正确，以及是否设置了正确的 CORS 头。");
+            });
+        }
+
+        function renderPage(num) {
+            pageRendering = true;
+            
+            // 获取页面
+            pdfDoc.getPage(num).then(function(page) {
+                // 计算适合移动端的宽度
+                const viewport = page.getViewport({scale: 1});
+                const containerWidth = document.getElementById('main-scroll').clientWidth - 20; // 减去padding
+                const desiredScale = containerWidth / viewport.width;
+                
+                // 结合用户手动缩放和自动适配
+                const finalScale = desiredScale * scale;
+                const scaledViewport = page.getViewport({scale: finalScale});
+
+                // 创建 Canvas
+                const canvas = document.createElement('canvas');
+                const context = canvas.getContext('2d');
+                canvas.height = scaledViewport.height;
+                canvas.width = scaledViewport.width;
+                canvas.className = 'pdf-page';
+
+                // 渲染上下文
+                const renderContext = {
+                    canvasContext: context,
+                    viewport: scaledViewport
+                };
+                
+                const renderTask = page.render(renderContext);
+
+                // 等待渲染完成
+                renderTask.promise.then(function() {
+                    pageRendering = false;
+                    if (pageNumPending !== null) {
+                        renderPage(pageNumPending);
+                        pageNumPending = null;
+                    }
+                });
+
+                // 清空容器并添加新 canvas (简单模式：每次只渲染一页，如需连续滚动需修改逻辑)
+                // 这里为了性能和移动端体验，采用单页视图模式，类似阅读器
+                canvasContainer.innerHTML = '';
+                canvasContainer.appendChild(canvas);
+                
+                // 更新页码输入框
+                document.getElementById('page-num').value = num;
+                updateButtons();
+            });
+        }
+
+        function queueRenderPage(num) {
+            if (pageRendering) {
+                pageNumPending = num;
+            } else {
+                renderPage(num);
+            }
+        }
+
+        function onPrevPage() {
+            if (pageNum <= 1) return;
+            pageNum--;
+            queueRenderPage(pageNum);
+        }
+
+        function onNextPage() {
+            if (pageNum >= pdfDoc.numPages) return;
+            pageNum++;
+            queueRenderPage(pageNum);
+        }
+
+        function zoomIn() {
+            scale += 0.2;
+            renderPage(pageNum);
+        }
+
+        function zoomOut() {
+            if (scale <= 0.4) return;
+            scale -= 0.2;
+            renderPage(pageNum);
+        }
+
+        function updateButtons() {
+            document.getElementById('prev-page').disabled = pageNum <= 1;
+            document.getElementById('next-page').disabled = pageNum >= pdfDoc.numPages;
+        }
+
+        function showError(msg) {
+            document.getElementById('loading').classList.add('hidden');
+            document.getElementById('error-msg').classList.remove('hidden');
+            document.getElementById('error-detail').innerText = msg;
+        }
+
+        // 绑定事件
+        document.getElementById('prev-page').addEventListener('click', onPrevPage);
+        document.getElementById('next-page').addEventListener('click', onNextPage);
+        
+        // 页码输入跳转
+        document.getElementById('page-num').addEventListener('change', function(e) {
+            const val = parseInt(e.target.value);
+            if (val >= 1 && val <= pdfDoc.numPages) {
+                pageNum = val;
+                queueRenderPage(pageNum);
+            } else {
+                e.target.value = pageNum;
+            }
         });
-      });
-    }
-    renderAll(1);
-  }).catch(function(err){
-    loadingTip.innerText = "PDF加载失败："+err.message;
-    loadingTip.style.color="red";
-    console.error(err);
-  });
-}
-
-// 无参数：展示文件列表
-function showList(){
-  loadingTip.remove();
-  pdfFiles.forEach(function(name){
-    var a = document.createElement("a");
-    a.href = "?f="+name;
-    a.innerText = name;
-    listBox.appendChild(a);
-  })
-}
-
-// 入口判断
-if(f){
-  renderPdf(f);
-}else{
-  showList();
-}
-</script>
+        
+        // 简单的触摸滑动支持
+        let touchStartX = 0;
+        let touchEndX = 0;
+        const mainScroll = document.getElementById('main-scroll');
+        
+        mainScroll.addEventListener('touchstart', e => {
+            touchStartX = e.changedTouches.screenX;
+        }, {passive: true});
+        
+        mainScroll.addEventListener('touchend', e => {
+            touchEndX = e.changedTouches.screenX;
+            handleSwipe();
+        }, {passive: true});
+        
+        function handleSwipe() {
+            const threshold = 50;
+            if (touchEndX < touchStartX - threshold) {
+                onNextPage(); // 左滑下一页
+            }
+            if (touchEndX > touchStartX + threshold) {
+                onPrevPage(); // 右滑上一页
+            }
+        }
+    </script>
 </body>
 </html>
