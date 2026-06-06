@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PDF在线预览</title>
+<style>
+body { padding:15px; margin:0; }
+#loading {text-align:center;font-size:18px;padding:40px 0;color:#333;}
+#list a {display:block;margin:8px 0;font-size:16px}
+#wrap canvas {display:block;margin:12px auto;border:1px #ddd solid;max-width:100%;}
+</style>
+</head>
+<body>
+<div id="list"></div>
+<div id="wrap">
+  <div id="loading">渲染中，请稍等！</div>
+</div>
+
+<!-- ES5版pdfjs，移除module，兼容全国产浏览器 -->
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@2.5.207/build/pdf.js"></script>
+<script>
+// 配置worker（ES5专用写法）
+pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@2.5.207/build/pdf.worker.js";
+const params = new URLSearchParams(location.search);
+const fileName = params.get("f");
+const listBox = document.getElementById("list");
+const renderBox = document.getElementById("wrap");
+const loadingTip = document.getElementById("loading");
+
+// PDF文件清单，新增在此添加
+const pdfFiles = [
+  "252708610203linode.pdf"
+];
+
+// 渲染PDF函数
+function renderPdf(path) {
+  pdfjsLib.getDocument(path).promise.then(function(doc){
+    loadingTip.remove(); //渲染成功删除加载文字
+    var pageTotal = doc.numPages;
+    var renderAll = function(pageNo){
+      doc.getPage(pageNo).then(function(page){
+        var scale = 1.2;
+        var viewport = page.getViewport({scale:scale});
+        var canvas = document.createElement("canvas");
+        var ctx = canvas.getContext("2d");
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        renderBox.appendChild(canvas);
+        page.render({canvasContext:ctx, viewport:viewport}).promise.then(function(){
+          if(pageNo < pageTotal){
+            renderAll(pageNo+1);
+          }
+        });
+      });
+    }
+    renderAll(1);
+  }).catch(function(err){
+    loadingTip.innerText = "PDF加载失败："+err.message;
+    loadingTip.style.color="red";
+    console.error(err);
+  });
+}
+
+// 无参数：展示文件列表
+function showList(){
+  loadingTip.remove();
+  pdfFiles.forEach(function(name){
+    var a = document.createElement("a");
+    a.href = "?f="+name;
+    a.innerText = name;
+    listBox.appendChild(a);
+  })
+}
+
+// 入口判断
+if(fileName){
+  renderPdf("pdf/"+fileName);
+}else{
+  showList();
+}
+</script>
+</body>
+</html>
