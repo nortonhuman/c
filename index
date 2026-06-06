@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>PDF预览</title>
+<style>
+body{margin:0}
+#wrap{width:98%;margin:0 auto}
+canvas{display:block;margin:8px auto}
+</style>
+</head>
+<body>
+<div id="wrap"></div>
+
+<script type="module">
+import * as pdfjsLib from "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.7/build/pdf.mjs";
+pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.7/build/pdf.worker.mjs";
+
+const params = new URLSearchParams(location.search);
+const pdffile = params.get("f");
+const box = document.getElementById("wrap");
+
+async function render(path){
+    const doc = await pdfjsLib.getDocument(path).promise;
+    for(let p=1;p<=doc.numPages;p++){
+        const page = await doc.getPage(p);
+        const scale = 1.2;
+        const vp = page.getViewport({scale});
+        const cav = document.createElement("canvas");
+        cav.width = vp.width;
+        cav.height = vp.height;
+        box.appendChild(cav);
+        await page.render({canvasContext:cav.getContext("2d"),viewport:vp}).promise;
+    }
+}
+if(pdffile) render("pdf/"+pdffile);
+</script>
+</body>
+</html>
