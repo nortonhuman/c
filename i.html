@@ -131,7 +131,7 @@
 
         // 初始化
         window.onload = function() {
-            const fileUrl = getQueryParam('file');
+            const fileUrl = getQueryParam('f');
             if (!fileUrl) {
                 showError("未在 URL 中找到 'file' 参数。\n示例: index.html?file=/pdfs/demo.pdf");
                 return;
