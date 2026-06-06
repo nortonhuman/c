@@ -7,10 +7,20 @@
 body{margin:0}
 #wrap{width:98%;margin:0 auto}
 canvas{display:block;margin:8px auto}
+/* 加载提示样式 */
+#loading {
+    text-align: center;
+    font-size: 18px;
+    color: #333;
+    padding: 50px 0;
+}
 </style>
 </head>
 <body>
-<div id="wrap"></div>
+<div id="wrap">
+    <!-- 渲染提示元素 -->
+    <div id="loading">渲染中，请稍等！</div>
+</div>
 
 <script type="module">
 import * as pdfjsLib from "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.7/build/pdf.mjs";
@@ -19,21 +29,40 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dis
 const params = new URLSearchParams(location.search);
 const pdffile = params.get("f");
 const box = document.getElementById("wrap");
+const loadingTip = document.getElementById("loading");
 
 async function render(path){
-    const doc = await pdfjsLib.getDocument(path).promise;
-    for(let p=1;p<=doc.numPages;p++){
-        const page = await doc.getPage(p);
-        const scale = 1.2;
-        const vp = page.getViewport({scale});
-        const cav = document.createElement("canvas");
-        cav.width = vp.width;
-        cav.height = vp.height;
-        box.appendChild(cav);
-        await page.render({canvasContext:cav.getContext("2d"),viewport:vp}).promise;
+    try {
+        const doc = await pdfjsLib.getDocument(path).promise;
+        // 清空加载提示（也可以保留，等所有页面渲染完再删）
+        loadingTip.remove();
+        
+        for(let p=1;p<=doc.numPages;p++){
+            const page = await doc.getPage(p);
+            const scale = 1.2;
+            const vp = page.getViewport({scale});
+            const cav = document.createElement("canvas");
+            cav.width = vp.width;
+            cav.height = vp.height;
+            box.appendChild(cav);
+            await page.render({canvasContext:cav.getContext("2d"),viewport:vp}).promise;
+        }
+    } catch (error) {
+        // 渲染失败时提示错误
+        loadingTip.textContent = "渲染失败，请检查PDF链接是否正确！";
+        loadingTip.style.color = "red";
+        console.error("PDF渲染错误：", error);
     }
 }
-if(pdffile) render(pdffile);
+
+// 如果有PDF文件参数才执行渲染
+if(pdffile) {
+    render(pdffile);
+} else {
+    // 没有PDF参数时提示
+    loadingTip.textContent = "未检测到PDF文件，请在URL中添加 ?f=PDF文件链接";
+    loadingTip.style.color = "#666";
+}
 </script>
 </body>
 </html>
