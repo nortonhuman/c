@@ -33,7 +33,7 @@ async function render(path){
         await page.render({canvasContext:cav.getContext("2d"),viewport:vp}).promise;
     }
 }
-if(pdffile) render("pdf/"+pdffile);
+if(pdffile) render(pdffile);
 </script>
 </body>
 </html>
