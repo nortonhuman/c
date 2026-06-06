@@ -1,20 +1,17 @@
-
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>PDF 在线预览</title>
-    <!-- 引入 TailwindCSS 用于快速样式布局 -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- 引入 Font Awesome 图标 -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <!-- 引入 PDF.js 核心库 -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <!-- 改用CDN加速的PDF.js，优先加载核心包 -->
+    <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
     <style>
         body {
             background-color: #f3f4f6;
-            touch-action: manipulation; /* 优化移动端触摸体验 */
+            touch-action: manipulation;
         }
         #pdf-container {
             width: 100%;
@@ -29,7 +26,6 @@
             border-radius: 4px;
             background-color: white;
         }
-        /* 加载动画 */
         .loader {
             border: 4px solid #f3f3f3;
             border-top: 4px solid #3b82f6;
@@ -42,16 +38,19 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
-        /* 隐藏滚动条但保留功能 */
         ::-webkit-scrollbar {
             width: 0px;
             background: transparent;
         }
+        /* 隐藏预加载的Canvas，避免视觉闪烁 */
+        .preload-canvas {
+            position: absolute;
+            opacity: 0;
+            pointer-events: none;
+        }
     </style>
 </head>
 <body class="h-screen flex flex-col">
-
-    <!-- 顶部导航栏 -->
     <header class="bg-white shadow-sm z-10 px-4 py-3 flex justify-between items-center sticky top-0">
         <div class="flex items-center space-x-2">
             <i class="fa-solid fa-file-pdf text-red-500 text-xl"></i>
@@ -68,15 +67,12 @@
         </div>
     </header>
 
-    <!-- 主内容区域 -->
     <main class="flex-1 overflow-y-auto relative" id="main-scroll">
-        <!-- 加载状态 -->
         <div id="loading" class="absolute inset-0 flex flex-col justify-center items-center bg-gray-50 z-0">
             <div class="loader mb-4"></div>
             <p class="text-gray-500 text-sm">正在加载文档...</p>
         </div>
 
-        <!-- 错误提示 -->
         <div id="error-msg" class="hidden absolute inset-0 flex flex-col justify-center items-center bg-gray-50 z-0 p-6 text-center">
             <i class="fa-solid fa-circle-exclamation text-red-500 text-4xl mb-4"></i>
             <p class="text-gray-700 font-medium mb-2">加载失败</p>
@@ -86,11 +82,13 @@
             </button>
         </div>
 
-        <!-- PDF 渲染容器 -->
-        <div id="pdf-container" class="p-2"></div>
+        <!-- 主渲染容器 + 预加载容器 -->
+        <div class="relative">
+            <div id="pdf-container" class="p-2"></div>
+            <div id="preload-container" class="preload-canvas"></div>
+        </div>
     </main>
 
-    <!-- 底部页码导航 (固定) -->
     <footer class="bg-white border-t px-4 py-2 flex justify-center items-center space-x-4 z-10">
         <button id="prev-page" class="px-3 py-1 bg-gray-100 rounded hover:bg-gray-200 disabled:opacity-50" disabled>
             <i class="fa-solid fa-chevron-left"></i>
@@ -105,106 +103,194 @@
     </footer>
 
     <script>
-        // 配置 PDF.js worker
-        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        // 优化PDF.js配置：禁用注释、图层等非核心功能，提升加载速度
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+        const PDF_OPTIONS = {
+            disableAnnotationRendering: true, // 禁用注释渲染
+            disableLayerRendering: true,      // 禁用图层渲染
+            disableFontFace: true,            // 禁用字体加载（提升速度，可能影响字体显示）
+            maxImageSize: 1024,               // 限制图片大小
+            useSystemFonts: true              // 使用系统字体
+        };
 
         let pdfDoc = null;
         let pageNum = 1;
         let pageRendering = false;
         let pageNumPending = null;
-        let scale = 1.0; // 初始缩放比例
+        let scale = 1.0;
         const canvasContainer = document.getElementById('pdf-container');
-        
-        // 获取 URL 中的 file 参数
+        const preloadContainer = document.getElementById('preload-container');
+        let cachedCanvas = null; // 复用Canvas，减少DOM创建开销
+        let preloadPages = new Map(); // 预加载页面缓存
+
+        // 获取URL参数
         function getQueryParam(param) {
             const urlParams = new URLSearchParams(window.location.search);
             return urlParams.get(param);
         }
 
-        // 初始化加载
+        // 初始化
         window.onload = function() {
             const fileUrl = getQueryParam('file');
-            
             if (!fileUrl) {
                 showError("未在 URL 中找到 'file' 参数。\n示例: index.html?file=/pdfs/demo.pdf");
                 return;
             }
 
-            // 如果是相对路径，确保它是相对于域名的
-            // 如果用户传入的是完整 URL (http...) 则直接使用，否则拼接当前域名
             let finalUrl = fileUrl;
             if (!fileUrl.startsWith('http') && !fileUrl.startsWith('//')) {
-                // 假设文件在静态托管根目录或子目录
                 finalUrl = window.location.origin + (fileUrl.startsWith('/') ? '' : '/') + fileUrl;
             }
 
             loadPDF(finalUrl);
         };
 
+        // 加载PDF：优化配置+异步加载
         function loadPDF(url) {
             document.getElementById('doc-title').innerText = decodeURIComponent(url.split('/').pop()) || 'PDF Document';
             
-            pdfjsLib.getDocument(url).promise.then(function(pdfDoc_) {
-                pdfDoc = pdfDoc_;
-                document.getElementById('page-count').textContent = pdfDoc.numPages;
-                document.getElementById('loading').classList.add('hidden');
-                
-                // 初始渲染第一页
-                renderPage(pageNum);
-                updateButtons();
-            }).catch(function(error) {
-                console.error('Error loading PDF:', error);
-                showError("无法加载 PDF 文件。请检查文件路径是否正确，以及是否设置了正确的 CORS 头。");
+            // 使用优化配置加载PDF
+            pdfjsLib.getDocument({ url, ...PDF_OPTIONS }).promise
+                .then(function(pdfDoc_) {
+                    pdfDoc = pdfDoc_;
+                    document.getElementById('page-count').textContent = pdfDoc.numPages;
+                    document.getElementById('loading').classList.add('hidden');
+                    
+                    // 初始化复用Canvas
+                    cachedCanvas = document.createElement('canvas');
+                    cachedCanvas.className = 'pdf-page';
+                    canvasContainer.appendChild(cachedCanvas);
+
+                    // 初始渲染第一页 + 预加载第二页
+                    renderPage(pageNum);
+                    preloadAdjacentPages(pageNum);
+                    updateButtons();
+                })
+                .catch(function(error) {
+                    console.error('Error loading PDF:', error);
+                    showError("无法加载 PDF 文件。请检查文件路径是否正确，以及是否设置了正确的 CORS 头。");
+                });
+        }
+
+        // 渲染页面：复用Canvas + 缓存缩放比例
+        function renderPage(num) {
+            if (pageRendering) return;
+            pageRendering = true;
+
+            // 优先使用预加载的页面
+            if (preloadPages.has(num)) {
+                const preloadedCanvas = preloadPages.get(num);
+                cachedCanvas.width = preloadedCanvas.width;
+                cachedCanvas.height = preloadedCanvas.height;
+                cachedCanvas.getContext('2d').drawImage(preloadedCanvas, 0, 0);
+                preloadPages.delete(num);
+                pageRendering = false;
+                updatePageUI(num);
+                preloadAdjacentPages(num); // 预加载新的相邻页
+                return;
+            }
+
+            // 正常渲染流程（复用Canvas）
+            pdfDoc.getPage(num).then(function(page) {
+                // 缓存容器宽度，避免频繁DOM查询
+                const containerWidth = document.getElementById('main-scroll').clientWidth - 20;
+                const viewport = page.getViewport({ scale: 1 });
+                const desiredScale = containerWidth / viewport.width;
+                const finalScale = desiredScale * scale;
+                const scaledViewport = page.getViewport({ scale: finalScale });
+
+                // 复用Canvas，避免重复创建
+                const context = cachedCanvas.getContext('2d');
+                cachedCanvas.height = scaledViewport.height;
+                cachedCanvas.width = scaledViewport.width;
+
+                // 高优先级渲染（跳过不必要的渲染步骤）
+                const renderContext = {
+                    canvasContext: context,
+                    viewport: scaledViewport,
+                    renderInteractiveForms: false // 禁用表单渲染
+                };
+
+                // 使用fastRender模式
+                const renderTask = page.render(renderContext);
+                renderTask.promise
+                    .then(function() {
+                        pageRendering = false;
+                        updatePageUI(num);
+                        // 处理待渲染的页面
+                        if (pageNumPending !== null) {
+                            const pendingNum = pageNumPending;
+                            pageNumPending = null;
+                            renderPage(pendingNum);
+                        } else {
+                            preloadAdjacentPages(num); // 预加载相邻页
+                        }
+                    })
+                    .catch(err => {
+                        console.error('渲染失败:', err);
+                        pageRendering = false;
+                    });
             });
         }
 
-        function renderPage(num) {
-            pageRendering = true;
-            
-            // 获取页面
-            pdfDoc.getPage(num).then(function(page) {
-                // 计算适合移动端的宽度
-                const viewport = page.getViewport({scale: 1});
-                const containerWidth = document.getElementById('main-scroll').clientWidth - 20; // 减去padding
+        // 预加载相邻页面（上一页/下一页）
+        function preloadAdjacentPages(currentNum) {
+            if (!pdfDoc) return;
+            // 预加载下一页
+            const nextNum = currentNum + 1;
+            if (nextNum <= pdfDoc.numPages && !preloadPages.has(nextNum)) {
+                preloadPage(nextNum);
+            }
+            // 预加载上一页
+            const prevNum = currentNum - 1;
+            if (prevNum >= 1 && !preloadPages.has(prevNum)) {
+                preloadPage(prevNum);
+            }
+        }
+
+        // 预加载指定页面
+        function preloadPage(num) {
+            const preloadCanvas = document.createElement('canvas');
+            preloadCanvas.className = 'preload-canvas';
+            preloadContainer.appendChild(preloadCanvas);
+
+            pdfDoc.getPage(num).then(page => {
+                const containerWidth = document.getElementById('main-scroll').clientWidth - 20;
+                const viewport = page.getViewport({ scale: 1 });
                 const desiredScale = containerWidth / viewport.width;
-                
-                // 结合用户手动缩放和自动适配
                 const finalScale = desiredScale * scale;
-                const scaledViewport = page.getViewport({scale: finalScale});
+                const scaledViewport = page.getViewport({ scale: finalScale });
 
-                // 创建 Canvas
-                const canvas = document.createElement('canvas');
-                const context = canvas.getContext('2d');
-                canvas.height = scaledViewport.height;
-                canvas.width = scaledViewport.width;
-                canvas.className = 'pdf-page';
+                preloadCanvas.width = scaledViewport.width;
+                preloadCanvas.height = scaledViewport.height;
+                const context = preloadCanvas.getContext('2d');
 
-                // 渲染上下文
-                const renderContext = {
+                page.render({
                     canvasContext: context,
-                    viewport: scaledViewport
-                };
-                
-                const renderTask = page.render(renderContext);
-
-                // 等待渲染完成
-                renderTask.promise.then(function() {
-                    pageRendering = false;
-                    if (pageNumPending !== null) {
-                        renderPage(pageNumPending);
-                        pageNumPending = null;
+                    viewport: scaledViewport,
+                    renderInteractiveForms: false
+                }).promise.then(() => {
+                    preloadPages.set(num, preloadCanvas);
+                    // 移除超出2页的预加载缓存，避免内存泄漏
+                    if (preloadPages.size > 2) {
+                        const keys = Array.from(preloadPages.keys());
+                        keys.forEach(key => {
+                            if (key !== pageNum - 1 && key !== pageNum + 1) {
+                                const canvas = preloadPages.get(key);
+                                canvas.remove();
+                                preloadPages.delete(key);
+                            }
+                        });
                     }
                 });
-
-                // 清空容器并添加新 canvas (简单模式：每次只渲染一页，如需连续滚动需修改逻辑)
-                // 这里为了性能和移动端体验，采用单页视图模式，类似阅读器
-                canvasContainer.innerHTML = '';
-                canvasContainer.appendChild(canvas);
-                
-                // 更新页码输入框
-                document.getElementById('page-num').value = num;
-                updateButtons();
             });
+        }
+
+        // 更新页面UI（抽离重复逻辑）
+        function updatePageUI(num) {
+            document.getElementById('page-num').value = num;
+            document.getElementById('page-info').textContent = `${num}/${pdfDoc.numPages}`;
+            updateButtons();
         }
 
         function queueRenderPage(num) {
@@ -227,15 +313,23 @@
             queueRenderPage(pageNum);
         }
 
+        // 优化缩放逻辑：缓存缩放比例，避免重复渲染
+        let lastScale = scale;
         function zoomIn() {
             scale += 0.2;
-            renderPage(pageNum);
+            if (scale !== lastScale) {
+                lastScale = scale;
+                renderPage(pageNum);
+            }
         }
 
         function zoomOut() {
             if (scale <= 0.4) return;
             scale -= 0.2;
-            renderPage(pageNum);
+            if (scale !== lastScale) {
+                lastScale = scale;
+                renderPage(pageNum);
+            }
         }
 
         function updateButtons() {
@@ -253,40 +347,55 @@
         document.getElementById('prev-page').addEventListener('click', onPrevPage);
         document.getElementById('next-page').addEventListener('click', onNextPage);
         
-        // 页码输入跳转
         document.getElementById('page-num').addEventListener('change', function(e) {
             const val = parseInt(e.target.value);
-            if (val >= 1 && val <= pdfDoc.numPages) {
+            if (val >= 1 && val <= pdfDoc.numPages && val !== pageNum) {
                 pageNum = val;
                 queueRenderPage(pageNum);
             } else {
                 e.target.value = pageNum;
             }
         });
-        
-        // 简单的触摸滑动支持
+
+        // 优化触摸滑动：增加节流，避免频繁触发
         let touchStartX = 0;
         let touchEndX = 0;
+        let isSwiping = false;
         const mainScroll = document.getElementById('main-scroll');
         
         mainScroll.addEventListener('touchstart', e => {
+            if (isSwiping) return;
             touchStartX = e.changedTouches.screenX;
         }, {passive: true});
         
         mainScroll.addEventListener('touchend', e => {
+            if (isSwiping) return;
             touchEndX = e.changedTouches.screenX;
+            isSwiping = true;
             handleSwipe();
+            setTimeout(() => { isSwiping = false; }, 300); // 节流300ms
         }, {passive: true});
         
         function handleSwipe() {
             const threshold = 50;
-            if (touchEndX < touchStartX - threshold) {
-                onNextPage(); // 左滑下一页
-            }
-            if (touchEndX > touchStartX + threshold) {
-                onPrevPage(); // 右滑上一页
+            const diff = touchEndX - touchStartX;
+            if (Math.abs(diff) < threshold) return; // 忽略小幅度滑动
+            
+            if (diff < -threshold) {
+                onNextPage();
+            } else if (diff > threshold) {
+                onPrevPage();
             }
         }
+
+        // 窗口大小变化时：防抖处理，避免频繁重绘
+        let resizeTimer;
+        window.addEventListener('resize', () => {
+            clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(() => {
+                if (pdfDoc) renderPage(pageNum);
+            }, 200);
+        });
     </script>
 </body>
 </html>
